@@ -1,8 +1,9 @@
-// ignore_for_file: library_private_types_in_public_api, library_prefixes, use_build_context_synchronously
+// ignore_for_file: deprecated_member_use, library_private_types_in_public_api, library_prefixes, use_build_context_synchronously
 
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
+// ignore: avoid_web_libraries_in_flutter
+import 'dart:html' as html;
 import 'package:csv/csv.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
@@ -12,6 +13,12 @@ import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:socket_io_client/socket_io_client.dart' as IO;
+
+// استيراد مكتبات الـ PDF وإعادة التشغيل
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
+import 'package:restart_app/restart_app.dart';
 
 void main() {
   runApp(const VehicleEntryApp());
@@ -74,10 +81,10 @@ class Vehicle {
 
   factory Vehicle.fromJson(Map<String, dynamic> json) => Vehicle(
         id: json['id'].toString(),
-        model: json['model'],
+        model: json['model'] ?? '',
         color: json['color'] ?? 'غير محدد',
-        plateNumber: json['plateNumber'],
-        ownerName: json['ownerName'],
+        plateNumber: json['plateNumber'] ?? '',
+        ownerName: json['ownerName'] ?? 'غير محدد',
         entryTime: DateTime.parse(json['entryTime']),
       );
 }
@@ -90,8 +97,7 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  // استبدل هذا الرابط برابط السيرفر الخارجي عند الرفع
-  final String domainUrl = 'https://mawada-company-sy.loca.lt';
+  final String domainUrl = 'https://sad-views-look.loca.lt';
 
   late IO.Socket socket;
   Timer? _fallbackTimer;
@@ -101,24 +107,26 @@ class _HomeScreenState extends State<HomeScreen> {
 
   final List<String> _modelsList = ['تويوتا كامري', 'هيونداي إلنترا', 'كيا سيراتو', 'نيسان صني'];
   final List<String> _colorsList = ['أبيض', 'أسود', 'فضي', 'أحمر', 'أزرق', 'رمادي'];
+  final List<String> _ownersList = ['مكتب 1', 'مكتب 2', 'مكتب 3', 'مكتب 812 '];
 
   String? _selectedModel;
   String? _selectedColor;
+  String? _selectedOwner;
 
   final _formKey = GlobalKey<FormState>();
   final _customModelController = TextEditingController();
   final _customColorController = TextEditingController();
+  final _customOwnerController = TextEditingController();
   final _plateController = TextEditingController();
-  final _ownerController = TextEditingController();
 
   bool _isCustomModel = false;
   bool _isCustomColor = false;
+  bool _isCustomOwner = false;
   bool _isLoading = false;
 
-  String _sortBy = 'time'; // time, owner, model
+  String _sortBy = 'time';
 
   final Map<String, String> _customHeaders = {
-    'bypass-tunnel-reminder': 'true',
     'Content-Type': 'application/json',
   };
 
@@ -128,7 +136,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _fetchDataFromApi();
     _initSocket();
 
-    _fallbackTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+    _fallbackTimer = Timer.periodic(const Duration(seconds: 4), (_) {
       _fetchDataFromApi(isBackground: true);
     });
   }
@@ -138,7 +146,6 @@ class _HomeScreenState extends State<HomeScreen> {
       domainUrl,
       IO.OptionBuilder()
           .setTransports(['websocket', 'polling'])
-          .setExtraHeaders({'bypass-tunnel-reminder': 'true'})
           .enableAutoConnect()
           .build(),
     );
@@ -160,12 +167,11 @@ class _HomeScreenState extends State<HomeScreen> {
     socket.dispose();
     _customModelController.dispose();
     _customColorController.dispose();
+    _customOwnerController.dispose();
     _plateController.dispose();
-    _ownerController.dispose();
     super.dispose();
   }
 
-  // جلب البيانات والقوائم
   Future<void> _fetchDataFromApi({bool isBackground = false}) async {
     if (!isBackground) {
       setState(() => _isLoading = true);
@@ -173,11 +179,11 @@ class _HomeScreenState extends State<HomeScreen> {
     try {
       final vehiclesRes = await http.get(
         Uri.parse('$domainUrl/api/vehicles'),
-        headers: {'bypass-tunnel-reminder': 'true'},
+        headers: _customHeaders,
       );
       final optionsRes = await http.get(
         Uri.parse('$domainUrl/api/options'),
-        headers: {'bypass-tunnel-reminder': 'true'},
+        headers: _customHeaders,
       );
 
       if (vehiclesRes.statusCode == 200) {
@@ -186,6 +192,12 @@ class _HomeScreenState extends State<HomeScreen> {
           setState(() {
             _vehicles.clear();
             _vehicles.addAll(vehiclesJson.map((e) => Vehicle.fromJson(e)).toList());
+            
+            for (var v in _vehicles) {
+              if (v.ownerName.isNotEmpty && !_ownersList.contains(v.ownerName)) {
+                _ownersList.add(v.ownerName);
+              }
+            }
           });
         }
       }
@@ -194,8 +206,8 @@ class _HomeScreenState extends State<HomeScreen> {
         final optionsData = jsonDecode(optionsRes.body);
         if (mounted) {
           setState(() {
-            final List<String> apiModels = List<String>.from(optionsData['models']);
-            final List<String> apiColors = List<String>.from(optionsData['colors']);
+            final List<String> apiModels = List<String>.from(optionsData['models'] ?? []);
+            final List<String> apiColors = List<String>.from(optionsData['colors'] ?? []);
 
             for (var m in apiModels) {
               if (!_modelsList.contains(m)) _modelsList.add(m);
@@ -205,11 +217,6 @@ class _HomeScreenState extends State<HomeScreen> {
             }
           });
         }
-      }
-      if (!isBackground && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('تم تحديث الواجهة والبيانات بنجاح'), backgroundColor: Colors.blue, duration: Duration(seconds: 1)),
-        );
       }
     } catch (e) {
       if (!isBackground) {
@@ -236,8 +243,8 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // تصدير التقرير اليومي للسيارات المسجلة
-  Future<void> _generateDailyReport() async {
+  // تصدير وتحميل التقرير اليومي كملف PDF وإعادة تشغيل التطبيق تلقائياً
+  Future<void> _downloadDailyReportPDFAndRestart() async {
     if (_vehicles.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('لا توجد سيارات مسجلة حالياً لتصدير التقرير'), backgroundColor: Colors.orange),
@@ -245,68 +252,111 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    List<List<dynamic>> rows = [];
-    rows.add(["رقم اللوحة", "نوع السيارة", "اللون", "المالك / المكتب", "وقت الدخول"]);
+    final fontData = await PdfGoogleFonts.amiriRegular();
+    final fontBoldData = await PdfGoogleFonts.amiriBold();
 
-    for (var v in _vehicles) {
-      rows.add([
-        v.plateNumber,
-        v.model,
-        v.color,
-        v.ownerName,
-        DateFormat('yyyy/MM/dd hh:mm a').format(v.entryTime),
-      ]);
-    }
-
-    String csvData = const ListToCsvConverter().convert(rows);
+    final pdf = pw.Document();
     final todayStr = DateFormat('yyyy-MM-dd').format(DateTime.now());
 
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('التقرير اليومي للسيارات المسجلة ($todayStr)'),
-        content: SizedBox(
-          width: double.maxFinite,
-          child: SingleChildScrollView(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text('إجمالي عدد السيارات: ${_vehicles.length}', style: const TextStyle(fontWeight: FontWeight.bold)),
-                const SizedBox(height: 10),
-                Container(
-                  padding: const EdgeInsets.all(8),
-                  color: Colors.grey.shade100,
-                  child: SelectableText(csvData, style: const TextStyle(fontSize: 12, fontFamily: 'monospace')),
+    pdf.addPage(
+      pw.Page(
+        pageFormat: PdfPageFormat.a4,
+        textDirection: pw.TextDirection.rtl,
+        build: (pw.Context context) {
+          return pw.Column(
+            crossAxisAlignment: pw.CrossAxisAlignment.start,
+            children: [
+              pw.Header(
+                level: 0,
+                child: pw.Row(
+                  mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                  children: [
+                    pw.Text(
+                      'التقرير اليومي للسيارات المسجلة ($todayStr)',
+                      style: pw.TextStyle(font: fontBoldData, fontSize: 16),
+                    ),
+                    pw.Text(
+                      'Engineer Saeed Katoua',
+                      style: pw.TextStyle(font: fontData, fontSize: 10, color: PdfColors.grey700),
+                    ),
+                  ],
                 ),
-              ],
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('إغلاق')),
-        ],
+              ),
+              pw.SizedBox(height: 10),
+              pw.Text(
+                'إجمالي عدد السيارات: ${_vehicles.length}',
+                style: pw.TextStyle(font: fontData, fontSize: 12),
+              ),
+              pw.SizedBox(height: 15),
+              pw.Table.fromTextArray(
+                headers: ['وقت الدخول', 'المالك / المكتب', 'اللون', 'نوع السيارة', 'رقم اللوحة'],
+                data: _vehicles.map((v) => [
+                  DateFormat('yyyy/MM/dd hh:mm a').format(v.entryTime),
+                  v.ownerName,
+                  v.color,
+                  v.model,
+                  v.plateNumber,
+                ]).toList(),
+                cellStyle: pw.TextStyle(font: fontData, fontSize: 10),
+                headerStyle: pw.TextStyle(font: fontBoldData, fontSize: 11),
+                headerDecoration: const pw.BoxDecoration(color: PdfColors.grey300),
+              ),
+            ],
+          );
+        },
       ),
     );
+
+    final Uint8List bytes = await pdf.save();
+    final fileName = 'vehicles_report_$todayStr.pdf';
+
+    if (kIsWeb) {
+      final blob = html.Blob([bytes], 'application/pdf');
+      final url = html.Url.createObjectUrlFromBlob(blob);
+      final _ = html.AnchorElement(href: url)
+        ..setAttribute("download", fileName)
+        ..click();
+      html.Url.revokeObjectUrl(url);
+    } else {
+      await Printing.sharePdf(bytes: bytes, filename: fileName);
+    }
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('تم تنزيل التقرير ($fileName) بنجاح! جاري إعادة تشغيل التطبيق...'),
+          backgroundColor: Colors.green,
+          duration: const Duration(seconds: 2),
+        ),
+      );
+
+      await Future.delayed(const Duration(seconds: 2));
+
+      if (kIsWeb) {
+        html.window.location.reload();
+      } else {
+        Restart.restartApp();
+      }
+    }
   }
 
-  // تفريغ الحقول وإعادتها لحالتها الافتراضية
   void _clearFormFields() {
     _formKey.currentState?.reset();
     _customModelController.clear();
     _customColorController.clear();
+    _customOwnerController.clear();
     _plateController.clear();
-    _ownerController.clear();
 
     setState(() {
       _selectedModel = null;
       _selectedColor = null;
+      _selectedOwner = null;
       _isCustomModel = false;
       _isCustomColor = false;
+      _isCustomOwner = false;
     });
   }
 
-  // إضافة سيارة جديدة
   Future<void> _addVehicle() async {
     if (!_formKey.currentState!.validate()) {
       return;
@@ -318,11 +368,14 @@ class _HomeScreenState extends State<HomeScreen> {
     final String finalColor = _isCustomColor 
         ? _customColorController.text.trim() 
         : (_selectedColor ?? '');
+    final String finalOwner = _isCustomOwner 
+        ? _customOwnerController.text.trim() 
+        : (_selectedOwner ?? '');
 
-    if (finalModel.isEmpty || finalColor.isEmpty) {
+    if (finalModel.isEmpty || finalColor.isEmpty || finalOwner.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('يرجى اختيار نوع السيارة واللون بشكل صحيح'),
+          content: Text('يرجى اختيار نوع السيارة، اللون، والمالك بشكل صحيح'),
           backgroundColor: Colors.orange,
         ),
       );
@@ -336,7 +389,7 @@ class _HomeScreenState extends State<HomeScreen> {
       model: finalModel,
       color: finalColor,
       plateNumber: _plateController.text.trim(),
-      ownerName: _ownerController.text.trim(),
+      ownerName: finalOwner,
       entryTime: DateTime.now(),
     );
 
@@ -351,13 +404,14 @@ class _HomeScreenState extends State<HomeScreen> {
         if (mounted) {
           if (!_modelsList.contains(finalModel)) _modelsList.add(finalModel);
           if (!_colorsList.contains(finalColor)) _colorsList.add(finalColor);
+          if (!_ownersList.contains(finalOwner)) _ownersList.add(finalOwner);
 
           _clearFormFields();
           _fetchDataFromApi(isBackground: true);
 
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('تم تسجيل الدخول والحفظ بالسيرفر بنجاح!'),
+              content: Text('تم تسجيل الدخول والحفظ بالسيرفر والمزامنة بنجاح!'),
               backgroundColor: Colors.green,
             ),
           );
@@ -386,7 +440,6 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // نافذة تعديل البيانات المسجلة
   void _showEditDialog(Vehicle vehicle) {
     final editFormKey = GlobalKey<FormState>();
     final editModelController = TextEditingController(text: vehicle.model);
@@ -467,7 +520,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // تحديث البيانات على السيرفر
   Future<void> _updateVehicleData(Vehicle updatedVehicle) async {
     try {
       final res = await http.put(
@@ -518,12 +570,6 @@ class _HomeScreenState extends State<HomeScreen> {
           final content = utf8.decode(bytes);
           fields = const CsvToListConverter().convert(content);
         }
-      } else if (result.files.single.path != null) {
-        final input = File(result.files.single.path!).openRead();
-        fields = await input
-            .transform(utf8.decoder)
-            .transform(const CsvToListConverter())
-            .toList();
       }
 
       setState(() {
@@ -681,9 +727,9 @@ class _HomeScreenState extends State<HomeScreen> {
             onPressed: () => _fetchDataFromApi(isBackground: false),
           ),
           IconButton(
-            icon: const Icon(Icons.assessment),
-            tooltip: 'تقرير السيارات المسجلة',
-            onPressed: _generateDailyReport,
+            icon: const Icon(Icons.picture_as_pdf),
+            tooltip: 'تنزيل تقرير PDF وإعادة التشغيل',
+            onPressed: _downloadDailyReportPDFAndRestart,
           ),
           IconButton(
             icon: const Icon(Icons.search),
@@ -719,9 +765,9 @@ class _HomeScreenState extends State<HomeScreen> {
                       ],
                     ),
                     ElevatedButton.icon(
-                      onPressed: _generateDailyReport,
-                      icon: const Icon(Icons.download),
-                      label: const Text('تقرير اليوم'),
+                      onPressed: _downloadDailyReportPDFAndRestart,
+                      icon: const Icon(Icons.picture_as_pdf),
+                      label: const Text('تنزيل التقرير PDF'),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.indigo,
                         foregroundColor: Colors.white,
@@ -852,15 +898,51 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                       const SizedBox(height: 12),
 
-                      TextFormField(
-                        controller: _ownerController,
-                        decoration: const InputDecoration(
-                          labelText: '4. اسم المكتب / المالك',
-                          prefixIcon: Icon(Icons.person),
-                          border: OutlineInputBorder(),
+                      if (!_isCustomOwner) ...[
+                        DropdownButtonFormField<String>(
+                          initialValue: _selectedOwner,
+                          decoration: InputDecoration(
+                            labelText: '4. اختر اسم المالك / المكتب',
+                            prefixIcon: const Icon(Icons.person),
+                            border: const OutlineInputBorder(),
+                            suffixIcon: IconButton(
+                              icon: const Icon(Icons.add),
+                              tooltip: 'كتابة اسم مالك/مكتب جديد',
+                              onPressed: () {
+                                setState(() {
+                                  _isCustomOwner = true;
+                                  _selectedOwner = null;
+                                });
+                              },
+                            ),
+                          ),
+                          items: _ownersList.map((owner) {
+                            return DropdownMenuItem(value: owner, child: Text(owner));
+                          }).toList(),
+                          onChanged: (val) => setState(() => _selectedOwner = val),
+                          validator: (val) => (!_isCustomOwner && val == null) ? 'يرجى اختيار اسم المالك أو المكتب' : null,
                         ),
-                        validator: (value) => value == null || value.isEmpty ? 'يرجى إدخال اسم المالك' : null,
-                      ),
+                      ] else ...[
+                        TextFormField(
+                          controller: _customOwnerController,
+                          decoration: InputDecoration(
+                            labelText: '4. اكتب اسم المالك / المكتب الجديد',
+                            prefixIcon: const Icon(Icons.edit),
+                            border: const OutlineInputBorder(),
+                            suffixIcon: IconButton(
+                              icon: const Icon(Icons.list),
+                              tooltip: 'العودة للقائمة المنسدلة',
+                              onPressed: () {
+                                setState(() {
+                                  _isCustomOwner = false;
+                                });
+                              },
+                            ),
+                          ),
+                          validator: (val) => (_isCustomOwner && (val == null || val.isEmpty)) ? 'يرجى كتابة اسم المالك' : null,
+                        ),
+                      ],
+
                       const SizedBox(height: 12),
 
                       InputDecorator(

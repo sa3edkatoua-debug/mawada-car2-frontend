@@ -38,6 +38,9 @@ dependencies:
   csv: ^6.0.0
   http: ^1.6.0
   socket_io_client: ^3.1.6
+  pdf: ^3.10.8
+  printing: ^5.13.1
+  restart_app: ^1.2.1
 dev_dependencies:
   flutter_test:
     sdk: flutter
